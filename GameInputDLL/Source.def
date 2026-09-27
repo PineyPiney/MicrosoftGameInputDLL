@@ -1,0 +1,12 @@
+LIBRARY GameInput
+
+EXPORTS
+initInput
+setConnectCallback
+setDisconnectCallback
+updateReading
+pollGamepad
+pollController
+setRumble
+releaseController
+releaseInput
