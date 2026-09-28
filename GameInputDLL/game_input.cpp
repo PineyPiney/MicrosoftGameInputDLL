@@ -3,13 +3,11 @@
 #include "pch.h"
 #include "game_input.h"
 
-#include <mutex>
-
 IGameInput* input;
 GameInputCallbackToken deviceCallbackToken;
 
-std::function<void(Controller*)> connectCb = {};
-std::function<void(IGameInputDevice*)> disconnectCb = {};
+void(__stdcall* connectCb)(Controller* controller) = {};
+void(__stdcall* disconnectCb)(IGameInputDevice* device) = {};
 
 HRESULT initInput() {
 	HRESULT i = GameInputCreate(&input);
@@ -53,18 +51,19 @@ void CALLBACK onDeviceEnumerated(
 	}
 }
 
-void setConnectCallback(const std::function<void(Controller*)>& cb) {
+void setConnectCallback(void (__stdcall* cb)(Controller* controller)) {
 	connectCb = cb;
 }
-void setDisconnectCallback(const std::function<void(IGameInputDevice*)>& cb) {
+void setDisconnectCallback(void (__stdcall* cb)(IGameInputDevice* device)) {
 	disconnectCb = cb;
 }
 
 HRESULT updateReading(Controller* controller) {
-	if (controller->lastReading) {
+	if (controller->lastReading) {		
 		controller->lastReading->Release();
 		controller->lastReading = nullptr;
 	}
+
 	return input->GetCurrentReading(controller->info->supportedInput, controller->device, &controller->lastReading);
 }
 
@@ -83,6 +82,7 @@ bool pollController(Controller* controller, uint32_t* numButtons, bool** buttons
 	*numAxes = controller->lastReading->GetControllerAxisCount();
 	*axes = new float[*numAxes];
 	uint32_t controllerAxesSize = controller->lastReading->GetControllerAxisState(*numAxes, *axes);
+	
 
 	return true;
 }
@@ -103,6 +103,11 @@ void releaseController(Controller* controller) {
 }
 
 void releaseInput() {
-	input->UnregisterCallback(deviceCallbackToken);
-	input->Release();
+	try {
+		input->UnregisterCallback(deviceCallbackToken);
+		input->Release();
+	}
+	catch (std::exception e) {
+		// Random exception sometimes thrown by input->Release
+	}
 }

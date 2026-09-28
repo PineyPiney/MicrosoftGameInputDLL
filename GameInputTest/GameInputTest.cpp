@@ -19,9 +19,10 @@ struct Controller {
 	const GameInputDeviceInfo* info = nullptr;
 };
 
+
 typedef int(__stdcall* f_init)();
-typedef int(__stdcall* f_setConnectCallback)(const std::function<void(Controller*)>& cb);
-typedef int(__stdcall* f_setDisconnectCallback)(const std::function<void(IGameInputDevice*)>& cb);
+typedef int(__stdcall* f_setConnectCallback)(void (__stdcall* cb)(Controller* controller));
+typedef int(__stdcall* f_setDisconnectCallback)(void (__stdcall* cb)(IGameInputDevice* device));
 typedef int(__stdcall* f_updateReading)(Controller* controller);
 typedef int(__stdcall* f_pollGamepad)(Controller* controller, GameInputGamepadState* state);
 typedef int(__stdcall* f_pollController)(Controller* controller, uint32_t* numButtons, bool** buttons, uint32_t* numAxes, float** axes);
@@ -29,8 +30,18 @@ typedef int(__stdcall* f_setRumble)(Controller* controller, float lowFrequency, 
 typedef int(__stdcall* f_releaseController)(Controller* controller);
 typedef int(__stdcall* f_release)();
 
+f_init init;
+f_setConnectCallback setConnectCallback;
+f_setDisconnectCallback setDisconnectCallback;
+f_updateReading updateReading;
+f_pollGamepad pollGamepad;
+f_pollController pollController;
+f_setRumble setRumble;
+f_releaseController releaseController;
+f_release release;
 
-std::vector<Controller*> devices = std::vector<Controller*>();
+
+std::vector<Controller*> controllers = std::vector<Controller*>();
 std::mutex m;
 
 std::map<HRESULT, const char*> hresultMessages = {
@@ -55,11 +66,14 @@ const char* getErrorMessage(HRESULT result) {
 	else return message->second;
 }
 
-void processError(HRESULT result, const char* message) {
+bool processError(HRESULT result, const char* message) {
 	const char* error = getErrorMessage(result);
-	if (error != nullptr) std::cout << message << ": " << error << std::endl;
+	if (error != nullptr) {
+		std::cout << message << ": " << error << std::endl;
+		return true;
+	}
+	else return false;
 }
-
 
 int main() {
 
@@ -71,17 +85,17 @@ int main() {
 
 	std::cout << "Dll is " << dll << std::endl;
 	
-	f_init init = (f_init)GetProcAddress(dll, "initInput");
-	f_setConnectCallback setConnectCallback = (f_setConnectCallback)GetProcAddress(dll, "setConnectCallback");
-	f_setDisconnectCallback setDisconnectCallback = (f_setDisconnectCallback)GetProcAddress(dll, "setDisconnectCallback");
-	f_updateReading updateReading = (f_updateReading)GetProcAddress(dll, "updateReading");
-	f_pollGamepad pollGamepad = (f_pollGamepad)GetProcAddress(dll, "pollGamepad");
-	f_pollController pollController = (f_pollController)GetProcAddress(dll, "pollController");
-	f_setRumble setRumble = (f_setRumble)GetProcAddress(dll, "setRumble");
-	f_releaseController releaseController = (f_releaseController)GetProcAddress(dll, "releaseController");
-	f_release release = (f_release)GetProcAddress(dll, "releaseInput");
+	init = (f_init)GetProcAddress(dll, "initInput");
+	setConnectCallback = (f_setConnectCallback)GetProcAddress(dll, "setConnectCallback");
+	setDisconnectCallback = (f_setDisconnectCallback)GetProcAddress(dll, "setDisconnectCallback");
+	updateReading = (f_updateReading)GetProcAddress(dll, "updateReading");
+	pollGamepad = (f_pollGamepad)GetProcAddress(dll, "pollGamepad");
+	pollController = (f_pollController)GetProcAddress(dll, "pollController");
+	setRumble = (f_setRumble)GetProcAddress(dll, "setRumble");
+	releaseController = (f_releaseController)GetProcAddress(dll, "releaseController");
+	release = (f_release)GetProcAddress(dll, "releaseInput");
 
-	processError(init(), "Failed to initialise GameInput");
+	if(processError(init(), "Failed to initialise GameInput")) return -1;
 
 	setConnectCallback([](Controller* controller) {
 		std::cout << "Controller Connected" <<
@@ -92,13 +106,13 @@ int main() {
 			std::endl;
 
 		std::lock_guard lk(m);
-		devices.push_back(controller);
+		controllers.push_back(controller);
 	});
 
-	setDisconnectCallback([releaseController](IGameInputDevice* device) {
+	setDisconnectCallback([](IGameInputDevice* device) {
 
 		std::lock_guard lk(m);
-		auto it = std::find_if(devices.begin(), devices.end(), [device](Controller* con) { return con->device == device; });
+		auto it = std::find_if(controllers.begin(), controllers.end(), [device](Controller* con) { return con->device == device; });
 		auto controller = *it;
 
 		std::cout << "Controller Disconnected" <<
@@ -109,7 +123,7 @@ int main() {
 			std::endl;
 
 		releaseController(controller);
-		devices.erase(it);
+		controllers.erase(it);
 	});
 
 	GameInputGamepadState state;
@@ -117,12 +131,12 @@ int main() {
 
 	while (run) {
 		std::lock_guard lk(m);
-		for (Controller* device : devices) {
+		for (Controller* controller : controllers) {
 
-			HRESULT readError = updateReading(device);
-			processError(readError, "Failed to get current reading");
+			HRESULT readError = updateReading(controller);
+			if(processError(readError, "Failed to get current reading")) continue;
 
-			auto gamepadError = pollGamepad(device, &state);
+			auto gamepadError = pollGamepad(controller, &state);
 			if (!gamepadError) std::cout << "Failed to get gamepad state" << std::endl;
 
 			if (state.buttons & GameInputGamepadB) {
@@ -132,23 +146,22 @@ int main() {
 			uint32_t numButtons, numAxes;
 			bool* buttons;
 			float* axes;
-			if (pollController(device, &numButtons, &buttons, &numAxes, &axes)) {
+			if (pollController(controller, &numButtons, &buttons, &numAxes, &axes)) {
 				delete[] buttons;
 				delete[] axes;
 			}
 
 			float lf = std::fmaxf(0.0f, state.leftThumbstickY - .2f) * 1.25f;
 			float hf = std::fmaxf(0.0f, state.rightThumbstickY - .2f) * 1.25f;
-			setRumble(device, lf, hf, state.leftTrigger, state.rightTrigger);
+			setRumble(controller, lf, hf, state.leftTrigger, state.rightTrigger);
 
-			
 		}
 
-		std::this_thread::sleep_for(std::chrono::microseconds(1000));
+		std::this_thread::sleep_for(std::chrono::microseconds(100000));
 	}
 
 	std::lock_guard lk(m);
-	devices.clear();
+	controllers.clear();
 
 	release();
 	return 0;
